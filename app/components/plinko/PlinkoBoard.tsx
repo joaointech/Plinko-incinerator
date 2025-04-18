@@ -23,6 +23,9 @@ interface BallObject {
   collisionBodyIds: Set<number>;
   prevCollisionTime: number;
   animationCompleted: boolean;
+  expectedBinIndex?: number;  // Expected bucket to land in
+  actualBinIndex?: number;    // Actual bucket it landed in
+  hasLoggedResults: boolean;
 }
 
 interface PathWithMetadata {
@@ -324,6 +327,19 @@ export default function PlinkoBoard({
             const xDiff = targetPin.x - ball.position.x;
             const direction = Math.sign(xDiff);
             
+            // Calculate and log the error distance
+            const errorDistance = Math.sqrt(
+              Math.pow(ball.position.x - targetPin.x, 2) + 
+              Math.pow(ball.position.y - targetPin.y, 2)
+            );
+            console.log(`Pin collision at row ${targetPin.row}:`, {
+              errorDistance: errorDistance.toFixed(2),
+              ballX: ball.position.x.toFixed(2),
+              ballY: ball.position.y.toFixed(2),
+              expectedX: targetPin.x.toFixed(2),
+              expectedY: targetPin.y.toFixed(2)
+            });
+            
             // Reset velocity first to have better control
             Matter.Body.setVelocity(ball, { x: 0, y: ball.velocity.y * 0.5 });
             
@@ -503,6 +519,44 @@ export default function PlinkoBoard({
         ctx.setLineDash([5, 5]);
         ctx.stroke();
         ctx.setLineDash([]);
+        
+        // Only draw error line for the ball's current pin position
+        if (ballData.body && !ballData.animationCompleted && ballData.currentPathIndex > 0) {
+          const ballPosition = ballData.body.position;
+          
+          // Get the current expected pin position
+          const currentPin = ballData.pathPoints[ballData.currentPathIndex];
+          
+          if (currentPin) {
+            // Calculate error distance
+            const errorDistance = Math.sqrt(
+              Math.pow(ballPosition.x - currentPin.x, 2) + 
+              Math.pow(ballPosition.y - currentPin.y, 2)
+            );
+            
+            // Draw error line only when ball is near the pin
+            const pinProximityThreshold = pinRadiusRef.current * 10; // Threshold to show error line
+            if (errorDistance < pinProximityThreshold) {
+              // Draw the error line
+              ctx.beginPath();
+              ctx.moveTo(ballPosition.x, ballPosition.y);
+              ctx.lineTo(currentPin.x, currentPin.y);
+              
+              // Draw with dashed red line to indicate error
+              ctx.strokeStyle = '#ff3333';
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([2, 2]);
+              ctx.stroke();
+              ctx.setLineDash([]);
+              
+              // Draw a small circle at the expected position
+              ctx.beginPath();
+              ctx.arc(currentPin.x, currentPin.y, 3, 0, Math.PI * 2);
+              ctx.fillStyle = '#ff3333';
+              ctx.fill();
+            }
+          }
+        }
       }
     };
     
@@ -542,6 +596,47 @@ export default function PlinkoBoard({
     
     // If we have more than 3 active balls, or any completed balls, clean up
     if (completedBalls.length > 0 || activeBallsRef.current.length > MAX_ACTIVE_BALLS) {
+      // Log completed ball results before cleanup
+      completedBalls.forEach(ballData => {
+        // Skip balls that have already had their results logged
+        if (ballData.body && !ballData.hasLoggedResults) {
+          ballData.hasLoggedResults = true; // Mark as logged to avoid duplicates
+          
+          // Calculate final bin position
+          if (containerRef.current && ballData.body) {
+            const containerWidth = containerRef.current.clientWidth;
+            const binCount = multipliers.length;
+            const binWidth = containerWidth / binCount;
+            
+            // Determine actual bin the ball landed in
+            const actualBinIndex = Math.min(
+              Math.floor(ballData.body.position.x / binWidth),
+              binCount - 1
+            );
+            ballData.actualBinIndex = actualBinIndex;
+            
+            // Determine expected bin from the path data
+            if (ballData.pathPoints.length > 0) {
+              const lastPoint = ballData.pathPoints[ballData.pathPoints.length - 1];
+              const expectedBinIndex = Math.min(
+                Math.floor(lastPoint.x / binWidth),
+                binCount - 1
+              );
+              ballData.expectedBinIndex = expectedBinIndex;
+              
+              // Log the results
+              console.log('Ball result:', {
+                expectedBin: expectedBinIndex,
+                actualBin: actualBinIndex,
+                expectedMultiplier: multipliers[expectedBinIndex],
+                actualMultiplier: multipliers[actualBinIndex],
+                match: expectedBinIndex === actualBinIndex ? 'Yes' : 'No'
+              });
+            }
+          }
+        }
+      });
+      
       // Remove completed balls from physics world
       completedBalls.forEach(ballData => {
         if (engineRef.current && ballData.body) {
@@ -657,7 +752,8 @@ export default function PlinkoBoard({
       currentPathIndex: 0,
       collisionBodyIds: new Set(),
       prevCollisionTime: 0,
-      animationCompleted: false
+      animationCompleted: false,
+      hasLoggedResults: false
     };
     
     // Add to active balls
